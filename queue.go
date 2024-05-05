@@ -6,7 +6,11 @@ import (
 	"sync"
 )
 
-var _ FifoQueue[int] = (*list[int])(nil)
+var (
+	_ FifoQueue[int] = (*list[int])(nil)
+
+	ErrNotFound = errors.New("not found")
+)
 
 type FifoQueue[T any] interface {
 	PushBack(val T)
@@ -36,7 +40,7 @@ func (q *list[T]) PushBack(val T) {
 		next: nil,
 	}
 
-	if q.head == nil {
+	if q.tail == nil {
 		q.head = n
 		q.tail = n
 	} else {
@@ -52,6 +56,7 @@ func (q *list[T]) PopFront() (T, bool) {
 		var val T
 		return val, false
 	}
+
 	val := q.head.val
 	q.head = q.head.next
 	q.len--
@@ -114,14 +119,14 @@ func (fq *fchan[T]) PopFront(ctx context.Context, shouldWait bool) (chan T, erro
 	res := make(chan T)
 
 	if fq.elems.Size() == 0 {
-		if shouldWait {
-			fq.waiters.PushBack(waiter[T]{
-				ctx: ctx,
-				res: res,
-			})
-			return res, nil
+		if !shouldWait {
+			return nil, ErrNotFound
 		}
-		return nil, errors.New("not found")
+		fq.waiters.PushBack(waiter[T]{
+			ctx: ctx,
+			res: res,
+		})
+		return res, nil
 	}
 
 	val, _ := fq.elems.PopFront()
