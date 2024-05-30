@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,29 +18,38 @@ func main() {
 		panic("port is not specified")
 	}
 
-	ctx, cancel := context.WithCancelCause(context.Background())
-	defer func() {
-		cancel(errors.New("main: finished"))
-	}()
-	ctx = newOSSignalContext(ctx)
-
+	ctx := context.Background()
 	srv := newService()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /{queue}", srv.addHandler)
 	mux.HandleFunc("GET /{queue}", srv.getHandler)
 
+	web := &http.Server{
+		Addr:    "127.0.0.1:" + port,
+		Handler: mux,
+	}
+
 	go func() {
-		if err := http.ListenAndServe("127.0.0.1:"+port, mux); err != nil {
-			slog.Error("http serve listener: %v", err)
-			cancel(fmt.Errorf("error on listen http: %v", err))
+		slog.Info("starting web server")
+		if err := web.ListenAndServe(); err != nil {
+			slog.Error("http serve listener", "err", err)
 		}
 	}()
-	slog.Info("web server started")
 
-	<-ctx.Done()
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt)
+	signal.Notify(signalChan, syscall.SIGTERM)
 
-	slog.Error("server shutdown", "reason", context.Cause(ctx))
+	s := <-signalChan
+	slog.Info("signal found", "value", s.String())
+
+	slog.Info("terminating web server...")
+	if err := web.Shutdown(ctx); err != nil {
+		slog.Error("server shutdown", "err", err)
+		return
+	}
+	slog.Error("web server terminated")
 }
 
 type service struct {
@@ -114,21 +121,4 @@ func (s *service) getHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-}
-
-func newOSSignalContext(ctx context.Context) context.Context {
-	ctx, cancel := context.WithCancelCause(ctx)
-	osSignals := make(chan os.Signal, 1)
-	signal.Notify(osSignals, syscall.SIGTERM, syscall.SIGINT)
-
-	go func() {
-		select {
-		case sig := <-osSignals:
-			cancel(errors.New(fmt.Sprintf("main error: got OS signal, %+v", sig.String())))
-		case <-ctx.Done():
-			signal.Stop(osSignals)
-		}
-	}()
-
-	return ctx
 }
